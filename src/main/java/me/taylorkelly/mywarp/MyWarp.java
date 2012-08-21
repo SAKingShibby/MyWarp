@@ -9,15 +9,27 @@ import java.util.ArrayList;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import me.taylorkelly.mywarp.data.Lister;
+import me.taylorkelly.mywarp.data.Searcher;
+import me.taylorkelly.mywarp.data.WarpList;
 import me.taylorkelly.mywarp.griefcraft.Updater;
+import me.taylorkelly.mywarp.listeners.MWBlockListener;
+import me.taylorkelly.mywarp.listeners.MWPlayerListener;
+import me.taylorkelly.mywarp.permissions.WarpPermissions;
+import me.taylorkelly.mywarp.sql.ConnectionManager;
+import me.taylorkelly.mywarp.utils.WarpHelp;
+import me.taylorkelly.mywarp.utils.WarpLogger;
 
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.event.Event.Priority;
-import org.bukkit.event.Event.Type;
+import org.bukkit.event.Event;
+//import org.bukkit.event.Event.Priority;
+//import org.bukkit.event.Event.Type;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.configuration.Configuration;
 
 public class MyWarp extends JavaPlugin {
 
@@ -27,6 +39,7 @@ public class MyWarp extends JavaPlugin {
     public String name;
     public String version;
     private Updater updater;
+    private PluginManager pm;
     public static final Logger log = Logger.getLogger("Minecraft");
 
     @Override
@@ -38,23 +51,14 @@ public class MyWarp extends JavaPlugin {
     public void onEnable() {
         name = this.getDescription().getName();
         version = this.getDescription().getVersion();
+        pm = getServer().getPluginManager();
+        
+        WarpSettings.initialize(getDataFolder());
+        
+        libCheck();
+        if(!sqlCheck()) { return; }
 
-        updater = new Updater();
-        try {
-            updater.check();
-            updater.update();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        File newDatabase = new File(getDataFolder(), "warps.db");
-        File oldDatabase = new File("homes-warps.db");
-        if (!newDatabase.exists() && oldDatabase.exists()) {
-            updateFiles(oldDatabase, newDatabase);
-        }
-
-
-        Connection conn = ConnectionManager.initialize(getDataFolder());
+        Connection conn = ConnectionManager.initialize();
         if (conn == null) {
             log.log(Level.SEVERE, "[MYWARP] Could not establish SQL connection. Disabling MyWarp");
             getServer().getPluginManager().disablePlugin(this);
@@ -65,18 +69,37 @@ public class MyWarp extends JavaPlugin {
         blockListener = new MWBlockListener(warpList);
         playerListener = new MWPlayerListener(warpList);
 
-        WarpPermissions.initialize(getServer());
+        WarpPermissions.initialize(this);
         WarpHelp.initialize(this);
-        WarpSettings.initialize(getDataFolder());
-
-        getServer().getPluginManager().registerEvent(Type.PLAYER_CHAT, playerListener, Priority.Low, this);
-        getServer().getPluginManager().registerEvent(Type.BLOCK_RIGHTCLICKED, blockListener, Priority.High, this);
-        getServer().getPluginManager().registerEvent(Type.SIGN_CHANGE, blockListener, Priority.High, this);
-
-        log.info(name + " " + version + " enabled");
+        
+        pm.registerEvents(blockListener, this);
+        pm.registerEvents(playerListener, this);
+        
+        WarpLogger.info(name + " " + version + " enabled");
+        
+        
     }
 
 
+    private void libCheck(){
+        updater = new Updater();
+        try {
+            updater.check();
+            updater.update();
+        } catch (Exception e) {
+        }
+    }
+    
+    private boolean sqlCheck() {
+        Connection conn = ConnectionManager.initialize();
+        if (conn == null) {
+            WarpLogger.severe("Could not establish SQL connection. Disabling MyWarp");
+            getServer().getPluginManager().disablePlugin(this);
+            return false;
+        } 
+        return true;
+    }
+    
     private void updateFiles(File oldDatabase, File newDatabase) {
         if (!getDataFolder().exists()) {
             getDataFolder().mkdirs();
@@ -87,7 +110,7 @@ public class MyWarp extends JavaPlugin {
         try {
             newDatabase.createNewFile();
         } catch (IOException ex) {
-            severe("Could not create new database file", ex);
+        	WarpLogger.severe("Could not create new database file", ex);
         }
         copyFile(oldDatabase, newDatabase);
     }
@@ -135,23 +158,16 @@ public class MyWarp extends JavaPlugin {
 
         if (sender instanceof Player) {
             Player player = (Player) sender;
-            if (commandName.equals("warp")) {
-                /**
-                 * /warp convert
+            if (commandName.equals("warp") || commandName.equals("mywarp") || commandName.equals("mw")) {
+            	/**
+                 *  /warp reload
                  */
-                if (split.length == 1 && split[0].equalsIgnoreCase("convert") && WarpPermissions.isAdmin(player)) {
-                    if (!warning) {
-                        player.sendMessage(ChatColor.RED + "Warning: " + ChatColor.WHITE + "Only use a copy of warps.txt.");
-                        player.sendMessage("This will delete the warps.txt it uses");
-                        player.sendMessage("Use " + ChatColor.RED + "'/warp convert'" + ChatColor.WHITE + " again to confirm.");
-                        warning = true;
-                    } else {
-                        Converter.convert(player, getServer(), warpList);
-                        warning = false;
-                    }
-                    /**
-                     * /warp list or /warp list #
-                     */
+            	if (split.length == 1 && split[0].equalsIgnoreCase("reload") && WarpPermissions.isAdmin(player)) {
+            		WarpSettings.initialize(getDataFolder());
+            		player.sendMessage("[MyWarp] Reloading config");
+                /**
+                 * /warp list or /warp list #
+                 */
                 } else if ((split.length == 1 || (split.length == 2 && isInteger(split[1]))) && split[0].equalsIgnoreCase("list")
                         && WarpPermissions.list(player)) {
                     Lister lister = new Lister(warpList);
@@ -175,7 +191,34 @@ public class MyWarp extends JavaPlugin {
                     /**
                      * /warp slist
                      */
-                } else if (split.length == 1 && split[0].equalsIgnoreCase("slist") && WarpPermissions.list(player)) {
+                }
+                
+                else if ((split.length == 1 || (split.length == 2 && isInteger(split[1]))) && split[0].equalsIgnoreCase("listown")
+                        && WarpPermissions.list(player)) {
+                    Lister lister = new Lister(warpList);
+                    lister.addPlayer(player);
+
+                    if (split.length == 2) {
+                        int page = Integer.parseInt(split[1]);
+                        if (page < 1) {
+                            player.sendMessage(ChatColor.RED + "Page number can't be below 1.");
+                            return true;
+                        } else if (page > lister.getOwnMaxPages(player)) {
+                            player.sendMessage(ChatColor.RED + "There are only " + lister.getOwnMaxPages(player) + " pages of warps");
+                            return true;
+                        }
+                        lister.setPage(page);
+                    } else {
+                        lister.setPage(1);
+                    }
+                    lister.listOwn();
+
+                    /**
+                     * /warp slist
+                     */
+                }
+                
+                else if (split.length == 1 && split[0].equalsIgnoreCase("slist") && WarpPermissions.list(player)) {
                     warpList.list(player);
                     /**
                      * /warp search <name>
@@ -345,7 +388,7 @@ public class MyWarp extends JavaPlugin {
                      */
                 } else if (split.length > 2 && split[0].equalsIgnoreCase("player") && WarpPermissions.isAdmin(player)) {
                     Player invitee = getServer().getPlayer(split[1]);
-                    String inviteeName = (invitee == null) ? split[1] : invitee.getName();
+                    //String inviteeName = (invitee == null) ? split[1] : invitee.getName();
 
                     // TODO ChunkLoading
                     String name = "";
@@ -367,10 +410,10 @@ public class MyWarp extends JavaPlugin {
                         messages.add(ChatColor.RED + "/warp [name]" + ChatColor.WHITE + "  -  Warp to " + ChatColor.GRAY + "[name]");
                     }
                     if (WarpPermissions.publicCreate(player) || WarpPermissions.privateCreate(player)) {
-                        messages.add(ChatColor.RED + "/warp create [name]" + ChatColor.WHITE + "  -  Create warp " + ChatColor.GRAY + "[name]");
+                        messages.add(ChatColor.RED + "/warp create [name]" + ChatColor.WHITE + "  -  Create PUBLIC warp " + ChatColor.GRAY + "[name]");
                     }
                     if (WarpPermissions.privateCreate(player)) {
-                        messages.add(ChatColor.RED + "/warp pcreate [name]" + ChatColor.WHITE + "  -  Create warp " + ChatColor.GRAY + "[name]");
+                        messages.add(ChatColor.RED + "/warp pcreate [name]" + ChatColor.WHITE + "  -  Create PRIVATE warp " + ChatColor.GRAY + "[name]");
                     }
 
                     if (WarpPermissions.delete(player)) {
@@ -384,13 +427,14 @@ public class MyWarp extends JavaPlugin {
 
                     if (WarpPermissions.list(player)) {
                         messages.add(ChatColor.RED + "/warp list (#)" + ChatColor.WHITE + "  -  Views warp page " + ChatColor.GRAY + "(#)");
+                        messages.add(ChatColor.RED + "/warp listown (#)" + ChatColor.WHITE + "  -  Views own warp page " + ChatColor.GRAY + "(#)");
                     }
 
                     if (WarpPermissions.search(player)) {
                         messages.add(ChatColor.RED + "/warp search [query]" + ChatColor.WHITE + "  -  Search for " + ChatColor.GRAY + "[query]");
                     }
                     if (WarpPermissions.give(player)) {
-                        messages.add(ChatColor.RED + "/warp give [player] [name[" + ChatColor.WHITE + "  -  Give " + ChatColor.GRAY + "[player]"
+                        messages.add(ChatColor.RED + "/warp give [player] [name]" + ChatColor.WHITE + "  -  Give " + ChatColor.GRAY + "[player]"
                                 + ChatColor.WHITE + " your " + ChatColor.GRAY + "[name]");
                     }
                     if (WarpPermissions.invite(player)) {
@@ -398,7 +442,7 @@ public class MyWarp extends JavaPlugin {
                                 + ChatColor.WHITE + " to " + ChatColor.GRAY + "[name]");
                     }
                     if (WarpPermissions.uninvite(player)) {
-                        messages.add(ChatColor.RED + "/warp uninvite [player] [name[" + ChatColor.WHITE + "  -  Uninvite " + ChatColor.GRAY + "[player]"
+                        messages.add(ChatColor.RED + "/warp uninvite [player] [name]" + ChatColor.WHITE + "  -  Uninvite " + ChatColor.GRAY + "[player]"
                                 + ChatColor.WHITE + " to " + ChatColor.GRAY + "[name]");
                     }
                     if (WarpPermissions.canPublic(player)) {
